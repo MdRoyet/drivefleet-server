@@ -280,3 +280,5 @@ async function runServer() {
 
 // Fire up pipeline wrappers
 runServer();
+
+export default app;
