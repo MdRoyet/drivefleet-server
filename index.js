@@ -32,9 +32,12 @@ const port = process.env.PORT || 5000;
 // ==========================================
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
-    credentials: true, // ⚠️ CRITICAL: Allows the browser to send the HTTPOnly cookie
-    exposedHeaders: ["set-auth-jwt"],
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://drivefleet-client-five.vercel.app", // ⚡ ADD THIS EXACT LINE
+    ],
+    credentials: true,
   }),
 );
 
@@ -54,7 +57,8 @@ app.use(express.json());
 // 3. JWKS SECURE COOKIE VERIFICATION MIDDLEWARE
 // ==========================================
 // Automatically fetches the public cryptographic keys from your Next.js Better Auth instance
-const JWKS_URI = process.env.JWKS_URI || "http://localhost:5000/api/auth/jwks";
+const JWKS_URI =
+  process.env.JWKS_URI || `${process.env.NEXT_PUBLIC_SERVER_URL}/api/auth/jwks`;
 const JWKS = createRemoteJWKSet(new URL(JWKS_URI));
 
 const verifyJwksCookie = async (req, res, next) => {
