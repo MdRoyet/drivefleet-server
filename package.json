@@ -11,9 +11,12 @@
   "dependencies": {
     "@better-auth/mongo-adapter": "^1.1.18",
     "better-auth": "^1.1.18",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "jose": "^6.2.3",
+    "jsonwebtoken": "^9.0.3",
     "mongodb": "^6.13.0"
   }
 }
