@@ -154,7 +154,7 @@ async function runServer() {
     });
 
     // ==========================================
-    // 6. BOOKING TRANSACTIONAL API ROUTES
+    // 6. BOOKING TRANSACTIONAL API
     // ==========================================
 
     app.post("/api/bookings", verifyToken, async (req, res) => {
