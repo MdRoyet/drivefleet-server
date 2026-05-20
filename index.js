@@ -1,22 +1,27 @@
-const express = require("express");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
-const jwt = require("jsonwebtoken");
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-require("dotenv").config();
-
-const app = express();
-const port = process.env.PORT || 5000;
-
 // ==========================================
 // 0. CUSTOM GOOGLE DNS RESOLUTION FALLBACK
 // ==========================================
-const dns = require("dns");
+import dns from "dns";
 // Explicitly forces the Node runtime to resolve network hosts via Google Public DNS
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 console.log(
   "🔒 Network Layer: DNS routing locked to Google Public DNS (8.8.8.8)",
 );
+
+import express from "express";
+import cors from "cors";
+import { ObjectId } from "mongodb";
+import dotenv from "dotenv";
+
+// BetterAuth Imports
+import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
+import { connectDB } from "./src/config/db.js";
+import { auth } from "./src/config/auth.js";
+
+dotenv.config();
+
+const app = express();
+const port = process.env.PORT || 5000;
 
 // ==========================================
 // 1. MIDDLEWARE SETUP
@@ -27,101 +32,55 @@ app.use(
     credentials: true,
   }),
 );
+
+// ==========================================
+// 2. MOUNT BETTER AUTH
+// ==========================================
+// ⚠️ CRITICAL: Must be placed BEFORE express.json()
+app.all("/api/auth/*", toNodeHandler(auth));
+
+// Body Parser for standard API routes
 app.use(express.json());
-app.use(cookieParser());
 
-// Custom Security Middleware: Token Verification
-const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
-
-  if (!token) {
-    return res
-      .status(401)
-      .json({ success: false, message: "Unauthorized access: Token missing." });
-  }
-
+// ==========================================
+// 3. CUSTOM SECURITY MIDDLEWARE (BetterAuth)
+// ==========================================
+const verifyToken = async (req, res, next) => {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    // BetterAuth automatically validates the HTTPOnly cookie session
+    const session = await auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+    });
+
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized access: Session missing or invalid.",
+      });
+    }
+
+    req.user = session.user; // Attach BetterAuth user metadata to request
     next();
   } catch (error) {
     return res.status(403).json({
       success: false,
-      message: "Forbidden access: Invalid or expired token.",
+      message: "Forbidden access.",
     });
   }
 };
 
 // ==========================================
-// 2. MONGODB CONNECTION INSTANTIATION
+// 4. DATABASE CONNECTION & ROUTES
 // ==========================================
-const uri = process.env.MONGODB_URI;
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-  // DNS & Network Optimization: Fail fast (5 seconds) instead of hanging indefinitely if DNS fails
-  serverSelectionTimeoutMS: 5000,
-});
-
 async function runServer() {
   try {
-    // Establish link with remote Atlas node cluster
-    await client.connect();
-    console.log("📌 Successfully connected to MongoDB Cluster (driveFleetDB)!");
-
-    const db = client.db("driveFleetDB");
+    // Establish link with remote Atlas node cluster via your db.js config
+    const db = await connectDB();
     const carsCollection = db.collection("cars");
     const bookingsCollection = db.collection("bookings");
 
     // ==========================================
-    // 3. AUTHENTICATION & JWT API ROUTES
-    // ==========================================
-
-    app.post("/api/auth/jwt", async (req, res) => {
-      try {
-        const user = req.body;
-        const token = jwt.sign(user, process.env.JWT_SECRET, {
-          expiresIn: "7d",
-        });
-
-        res
-          .cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          })
-          .json({
-            success: true,
-            message: "Secure authorization cookie established.",
-          });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    app.post("/api/auth/logout", async (req, res) => {
-      try {
-        res
-          .clearCookie("token", {
-            maxAge: 0,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          })
-          .json({
-            success: true,
-            message: "Logged out and cookie cleared successfully.",
-          });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    // ==========================================
-    // 4. CARS ENGINE CRUD API ROUTES
+    // 5. CARS ENGINE CRUD API ROUTES
     // ==========================================
 
     app.post("/api/cars", verifyToken, async (req, res) => {
@@ -161,6 +120,7 @@ async function runServer() {
           return res
             .status(404)
             .json({ success: false, message: "Car profile listing not found" });
+
         res.json({ success: true, data: result });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -194,7 +154,7 @@ async function runServer() {
     });
 
     // ==========================================
-    // 5. BOOKING TRANSACTIONAL API ROUTES
+    // 6. BOOKING TRANSACTIONAL API ROUTES
     // ==========================================
 
     app.post("/api/bookings", verifyToken, async (req, res) => {
@@ -232,10 +192,10 @@ async function runServer() {
     });
 
     // ==========================================
-    // 6. HEALTH DIAGNOSTIC AND BASELINE ENTRY
+    // 7. HEALTH DIAGNOSTIC AND BASELINE ENTRY
     // ==========================================
     app.get("/", (req, res) => {
-      res.send("⚙️ DriveFleet API Gateway running smoothly.");
+      res.send("⚙️ DriveFleet API Gateway running smoothly with BetterAuth.");
     });
 
     // Start listening only if the database connected successfully
@@ -260,7 +220,7 @@ async function runServer() {
       console.error(`👉 Details: ${err.message}`);
     }
     console.error("====================================================");
-    process.exit(1); // Kill the server process cleanly because it cannot run without a database
+    process.exit(1);
   }
 }
 
