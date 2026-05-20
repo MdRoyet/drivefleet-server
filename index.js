@@ -13,8 +13,12 @@ import cors from "cors";
 import { ObjectId } from "mongodb";
 import dotenv from "dotenv";
 
+// New Security Imports for JWT + Cookies
+import cookieParser from "cookie-parser";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
 // BetterAuth Imports
-import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
+import { toNodeHandler } from "better-auth/node";
 import { connectDB } from "./src/config/db.js";
 import { auth } from "./src/config/auth.js";
 
@@ -24,14 +28,18 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // ==========================================
-// 1. MIDDLEWARE SETUP
+// 1. MIDDLEWARE SETUP (CORS & Cookies)
 // ==========================================
 app.use(
   cors({
-    origin: ["http://localhost:3000"],
-    credentials: true,
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    credentials: true, // ⚠️ CRITICAL: Allows the browser to send the HTTPOnly cookie
+    exposedHeaders: ["set-auth-jwt"],
   }),
 );
+
+// Mount cookie parser before express.json()
+app.use(cookieParser());
 
 // ==========================================
 // 2. MOUNT BETTER AUTH
@@ -43,28 +51,35 @@ app.all("/api/auth/*", toNodeHandler(auth));
 app.use(express.json());
 
 // ==========================================
-// 3. CUSTOM SECURITY MIDDLEWARE (BetterAuth)
+// 3. JWKS SECURE COOKIE VERIFICATION MIDDLEWARE
 // ==========================================
-const verifyToken = async (req, res, next) => {
-  try {
-    // BetterAuth automatically validates the HTTPOnly cookie session
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders(req.headers),
-    });
+// Automatically fetches the public cryptographic keys from your Next.js Better Auth instance
+const JWKS_URI = process.env.JWKS_URI || "http://localhost:5000/api/auth/jwks";
+const JWKS = createRemoteJWKSet(new URL(JWKS_URI));
 
-    if (!session) {
+const verifyJwksCookie = async (req, res, next) => {
+  try {
+    // ⚡ Extract the JWT directly from the secure HTTPOnly cookie
+    const token = req.cookies.drivefleet_jwt;
+
+    if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized access: Session missing or invalid.",
+        message: "Unauthorized access: Secure JWT cookie missing.",
       });
     }
 
-    req.user = session.user; // Attach BetterAuth user metadata to request
+    // ⚡ Verify the signature mathematically against the Better Auth public keys
+    const { payload } = await jwtVerify(token, JWKS);
+
+    // Attach verified user claims (like sub, email) to the request context
+    req.user = payload;
     next();
   } catch (error) {
+    console.error("JWT Verification Error:", error.message);
     return res.status(403).json({
       success: false,
-      message: "Forbidden access.",
+      message: "Forbidden access: Token tampered or expired.",
     });
   }
 };
@@ -83,7 +98,7 @@ async function runServer() {
     // 5. CARS ENGINE CRUD API ROUTES
     // ==========================================
 
-    app.post("/api/cars", verifyToken, async (req, res) => {
+    app.post("/api/cars", verifyJwksCookie, async (req, res) => {
       try {
         const carData = req.body;
         const result = await carsCollection.insertOne(carData);
@@ -127,13 +142,12 @@ async function runServer() {
       }
     });
 
-    app.put("/api/cars/:id", verifyToken, async (req, res) => {
+    app.put("/api/cars/:id", verifyJwksCookie, async (req, res) => {
       try {
         const id = req.params.id;
         const updatedFields = req.body;
 
         // ⚠️ CRITICAL FIX: Delete the _id property from the update body.
-        // MongoDB IDs are immutable; passing it inside $set triggers a 500 Server Error.
         delete updatedFields._id;
 
         const result = await carsCollection.updateOne(
@@ -147,7 +161,7 @@ async function runServer() {
       }
     });
 
-    app.delete("/api/cars/:id", verifyToken, async (req, res) => {
+    app.delete("/api/cars/:id", verifyJwksCookie, async (req, res) => {
       try {
         const id = req.params.id;
         const result = await carsCollection.deleteOne({
@@ -163,7 +177,7 @@ async function runServer() {
     // 6. BOOKING TRANSACTIONAL API
     // ==========================================
 
-    app.post("/api/bookings", verifyToken, async (req, res) => {
+    app.post("/api/bookings", verifyJwksCookie, async (req, res) => {
       try {
         const bookingData = req.body;
         const bookingResult = await bookingsCollection.insertOne(bookingData);
@@ -179,9 +193,9 @@ async function runServer() {
       }
     });
 
-    app.get("/api/my-bookings", verifyToken, async (req, res) => {
+    app.get("/api/my-bookings", verifyJwksCookie, async (req, res) => {
       try {
-        // 🛡️ SECURE: Forces the database to search ONLY using the cryptographically verified session email
+        // 🛡️ SECURE: Forces the database to search ONLY using the verified session email
         const userEmail = req.user.email;
 
         const bookings = await bookingsCollection
@@ -193,44 +207,49 @@ async function runServer() {
       }
     });
 
-    // Secure Cancellation Route (PATCH/PUT update loop)
-    app.patch("/api/bookings/:id/cancel", verifyToken, async (req, res) => {
-      try {
-        const id = req.params.id;
+    // Secure Cancellation Route
+    app.patch(
+      "/api/bookings/:id/cancel",
+      verifyJwksCookie,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        // Update booking status to Cancelled in the database
-        const result = await bookingsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status: "Cancelled",
-              refundStatus: "Fully Refunded",
-              cancelledAt: new Date().toISOString(),
+          const result = await bookingsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status: "Cancelled",
+                refundStatus: "Fully Refunded",
+                cancelledAt: new Date().toISOString(),
+              },
             },
-          },
-        );
+          );
 
-        if (result.modifiedCount > 0) {
-          res.json({
-            success: true,
-            message: "Booking cancelled and refund processed.",
-          });
-        } else {
-          res.status(404).json({
-            success: false,
-            message: "Booking record not found or already modified.",
-          });
+          if (result.modifiedCount > 0) {
+            res.json({
+              success: true,
+              message: "Booking cancelled and refund processed.",
+            });
+          } else {
+            res.status(404).json({
+              success: false,
+              message: "Booking record not found or already modified.",
+            });
+          }
+        } catch (error) {
+          res.status(500).json({ success: false, error: error.message });
         }
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
+      },
+    );
 
     // ==========================================
     // 7. HEALTH DIAGNOSTIC AND BASELINE
     // ==========================================
     app.get("/", (req, res) => {
-      res.send("⚙️ DriveFleet API Gateway running smoothly with BetterAuth.");
+      res.send(
+        "⚙️ DriveFleet API Gateway running smoothly with JWKS HTTPOnly Cookie Verification.",
+      );
     });
 
     // Start listening only if the database connected successfully
@@ -247,9 +266,6 @@ async function runServer() {
     ) {
       console.error(
         "👉 DNS Resolution Failed! Your server cannot reach the internet or the MongoDB host template.",
-      );
-      console.error(
-        "👉 Check your internet connection or your local DNS settings.",
       );
     } else {
       console.error(`👉 Details: ${err.message}`);
