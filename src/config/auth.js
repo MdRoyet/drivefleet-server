@@ -1,17 +1,23 @@
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
 import { db } from "./db.js";
+import dotenv from "dotenv";
+
+dotenv.config(); // Ensure env variables load here!
 
 export const auth = betterAuth({
-  // 1. Tell BetterAuth to use MongoDB and pass it your database instance
   database: mongodbAdapter(db),
 
-  // 2. Enable standard Email & Password registration/login
+  // 1. Tell BetterAuth EXACTLY where it lives
+  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000/api/auth",
+
+  // 2. Tell BetterAuth to trust your Next.js frontend!
+  trustedOrigins: ["http://localhost:3000"],
+
   emailAndPassword: {
     enabled: true,
   },
 
-  // 3. Enable Google Social Login
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID,
