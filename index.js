@@ -35,11 +35,13 @@ app.use(
     origin: [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://drivefleet-client-five.vercel.app", // ⚡ ADD THIS EXACT LINE
+      "https://drivefleet-client-five.vercel.app",
     ],
     credentials: true,
   }),
 );
+
+app.use(express.json());
 
 // Mount cookie parser before express.json()
 app.use(cookieParser());
