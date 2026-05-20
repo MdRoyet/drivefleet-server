@@ -112,14 +112,19 @@ async function runServer() {
       }
     });
 
-    app.get("/api/cars/:id", async (req, res) => {
+    app.put("/api/cars/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const result = await carsCollection.findOne({ _id: new ObjectId(id) });
-        if (!result)
-          return res
-            .status(404)
-            .json({ success: false, message: "Car profile listing not found" });
+        const updatedFields = req.body;
+
+        // ⚠️ CRITICAL FIX: Delete the _id property from the update body.
+        // MongoDB IDs are immutable; passing it inside $set triggers a 500 Server Error.
+        delete updatedFields._id;
+
+        const result = await carsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedFields },
+        );
 
         res.json({ success: true, data: result });
       } catch (error) {
