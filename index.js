@@ -253,9 +253,12 @@ async function runServer() {
     });
 
     // Start listening only if the database connected successfully
-    app.listen(port, () => {
-      console.log(`🚀 DriveFleet Operational Hub active on port: ${port}`);
-    });
+    if (process.env.NODE_ENV !== "production") {
+      const port = process.env.PORT || 5000;
+      app.listen(port, () => {
+        console.log(`Legacy server listening on port ${port}...`);
+      });
+    }
   } catch (err) {
     console.error("====================================================");
     console.error("❌ CRITICAL DATABASE INITIALIZATION ERROR:");
