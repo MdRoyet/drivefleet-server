@@ -2,7 +2,6 @@
 // 0. CUSTOM GOOGLE DNS RESOLUTION FALLBACK
 // ==========================================
 import dns from "dns";
-// Explicitly forces the Node runtime to resolve network hosts via Google Public DNS
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 console.log(
   "🔒 Network Layer: DNS routing locked to Google Public DNS (8.8.8.8)",
@@ -12,12 +11,8 @@ import express from "express";
 import cors from "cors";
 import { ObjectId } from "mongodb";
 import dotenv from "dotenv";
-
-// New Security Imports for JWT + Cookies
 import cookieParser from "cookie-parser";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-
-// BetterAuth Imports
 import { toNodeHandler } from "better-auth/node";
 import { connectDB } from "./src/config/db.js";
 import { auth } from "./src/config/auth.js";
@@ -25,7 +20,6 @@ import { auth } from "./src/config/auth.js";
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 5000;
 
 // ==========================================
 // 1. MIDDLEWARE SETUP (CORS & Cookies)
@@ -42,32 +36,39 @@ app.use(
 );
 
 app.use(express.json());
-
-// Mount cookie parser before express.json()
 app.use(cookieParser());
 
 // ==========================================
 // 2. MOUNT BETTER AUTH
 // ==========================================
-// ⚠️ CRITICAL: Must be placed BEFORE express.json()
 app.all("/api/auth/*", toNodeHandler(auth));
 
-// Body Parser for standard API routes
-app.use(express.json());
+// ==========================================
+// 3. LAZY-LOADED JWKS SECURE COOKIE VERIFICATION
+// ==========================================
+// Safe from cold-start crashes because it executes only when a request arrives
+let JWKS = null;
+const getJWKS = () => {
+  if (!JWKS) {
+    const JWKS_URI =
+      process.env.JWKS_URI ||
+      `${process.env.NEXT_PUBLIC_SERVER_URL || process.env.VERCEL_URL || "https://drivefleet-server-3fq1b6d6z-md-royets-projects.vercel.app"}/api/auth/jwks`;
 
-// ==========================================
-// 3. JWKS SECURE COOKIE VERIFICATION MIDDLEWARE
-// ==========================================
-// Automatically fetches the public cryptographic keys from your Next.js Better Auth instance
-const JWKS_URI =
-  process.env.JWKS_URI || `${process.env.NEXT_PUBLIC_SERVER_URL}/api/auth/jwks`;
-const JWKS = createRemoteJWKSet(new URL(JWKS_URI));
+    // Fallback block if environment variables are missing
+    if (!JWKS_URI || JWKS_URI.includes("undefined")) {
+      throw new Error(
+        "Missing critical environment configuration: JWKS_URI or server URL variables.",
+      );
+    }
+
+    JWKS = createRemoteJWKSet(new URL(JWKS_URI));
+  }
+  return JWKS;
+};
 
 const verifyJwksCookie = async (req, res, next) => {
   try {
-    // ⚡ Extract the JWT directly from the secure HTTPOnly cookie
     const token = req.cookies.drivefleet_jwt;
-
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -75,220 +76,175 @@ const verifyJwksCookie = async (req, res, next) => {
       });
     }
 
-    // ⚡ Verify the signature mathematically against the Better Auth public keys
-    const { payload } = await jwtVerify(token, JWKS);
-
-    // Attach verified user claims (like sub, email) to the request context
+    const jwksSet = getJWKS();
+    const { payload } = await jwtVerify(token, jwksSet);
     req.user = payload;
     next();
   } catch (error) {
     console.error("JWT Verification Error:", error.message);
     return res.status(403).json({
       success: false,
-      message: "Forbidden access: Token tampered or expired.",
+      message:
+        "Forbidden access: Token configuration issue, tampered or expired.",
     });
   }
 };
 
 // ==========================================
-// 4. DATABASE CONNECTION & ROUTES
+// 4. DATABASE COLLECTION REFERENCES
 // ==========================================
-async function runServer() {
+let db, carsCollection, bookingsCollection;
+const getCollection = async (collectionName) => {
+  if (!db) {
+    db = await connectDB();
+    carsCollection = db.collection("cars");
+    bookingsCollection = db.collection("bookings");
+  }
+  return db.collection(collectionName);
+};
+
+// ==========================================
+// 5. CARS ENGINE CRUD API ROUTES
+// ==========================================
+app.post("/api/cars", verifyJwksCookie, async (req, res) => {
   try {
-    // Establish link with remote Atlas node cluster via your db.js config
-    const db = await connectDB();
-    const carsCollection = db.collection("cars");
-    const bookingsCollection = db.collection("bookings");
+    const cars = await getCollection("cars");
+    const result = await cars.insertOne(req.body);
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-    // ==========================================
-    // 5. CARS ENGINE CRUD API ROUTES
-    // ==========================================
+app.get("/api/cars", async (req, res) => {
+  try {
+    const { search, carType } = req.query;
+    let query = {};
+    if (search) query.carName = { $regex: search, $options: "i" };
+    if (carType) query.carType = carType;
 
-    app.post("/api/cars", verifyJwksCookie, async (req, res) => {
-      try {
-        const carData = req.body;
-        const result = await carsCollection.insertOne(carData);
-        res.status(201).json({ success: true, data: result });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
+    const cars = await getCollection("cars");
+    const result = await cars.find(query).toArray();
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-    app.get("/api/cars", async (req, res) => {
-      try {
-        const { search, carType } = req.query;
-        let query = {};
+app.get("/api/cars/:id", async (req, res) => {
+  try {
+    const cars = await getCollection("cars");
+    const result = await cars.findOne({ _id: new ObjectId(req.params.id) });
+    if (!result)
+      return res
+        .status(404)
+        .json({ success: false, message: "Car profile not found" });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-        if (search) {
-          query.carName = { $regex: search, $options: "i" };
-        }
-        if (carType) {
-          query.carType = carType;
-        }
+app.put("/api/cars/:id", verifyJwksCookie, async (req, res) => {
+  try {
+    const updatedFields = req.body;
+    delete updatedFields._id;
+    const cars = await getCollection("cars");
+    const result = await cars.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updatedFields },
+    );
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-        const cars = await carsCollection.find(query).toArray();
-        res.json({ success: true, data: cars });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
+app.delete("/api/cars/:id", verifyJwksCookie, async (req, res) => {
+  try {
+    const cars = await getCollection("cars");
+    const result = await cars.deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
-    app.get("/api/cars/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await carsCollection.findOne({ _id: new ObjectId(id) });
-        if (!result)
-          return res
-            .status(404)
-            .json({ success: false, message: "Car profile listing not found" });
+// ==========================================
+// 6. BOOKING TRANSACTIONAL API
+// ==========================================
+app.post("/api/bookings", verifyJwksCookie, async (req, res) => {
+  try {
+    const bookingData = req.body;
+    const bookings = await getCollection("bookings");
+    const cars = await getCollection("cars");
 
-        res.json({ success: true, data: result });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    app.put("/api/cars/:id", verifyJwksCookie, async (req, res) => {
-      try {
-        const id = req.params.id;
-        const updatedFields = req.body;
-
-        // ⚠️ CRITICAL FIX: Delete the _id property from the update body.
-        delete updatedFields._id;
-
-        const result = await carsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updatedFields },
-        );
-
-        res.json({ success: true, data: result });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    app.delete("/api/cars/:id", verifyJwksCookie, async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await carsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-        res.json({ success: true, data: result });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    // ==========================================
-    // 6. BOOKING TRANSACTIONAL API
-    // ==========================================
-
-    app.post("/api/bookings", verifyJwksCookie, async (req, res) => {
-      try {
-        const bookingData = req.body;
-        const bookingResult = await bookingsCollection.insertOne(bookingData);
-
-        await carsCollection.updateOne(
-          { _id: new ObjectId(bookingData.carId) },
-          { $inc: { booking_count: 1 } },
-        );
-
-        res.status(201).json({ success: true, data: bookingResult });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    app.get("/api/my-bookings", verifyJwksCookie, async (req, res) => {
-      try {
-        // 🛡️ SECURE: Forces the database to search ONLY using the verified session email
-        const userEmail = req.user.email;
-
-        const bookings = await bookingsCollection
-          .find({ userEmail: userEmail })
-          .toArray();
-        res.json({ success: true, data: bookings });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    // Secure Cancellation Route
-    app.patch(
-      "/api/bookings/:id/cancel",
-      verifyJwksCookie,
-      async (req, res) => {
-        try {
-          const id = req.params.id;
-
-          const result = await bookingsCollection.updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $set: {
-                status: "Cancelled",
-                refundStatus: "Fully Refunded",
-                cancelledAt: new Date().toISOString(),
-              },
-            },
-          );
-
-          if (result.modifiedCount > 0) {
-            res.json({
-              success: true,
-              message: "Booking cancelled and refund processed.",
-            });
-          } else {
-            res.status(404).json({
-              success: false,
-              message: "Booking record not found or already modified.",
-            });
-          }
-        } catch (error) {
-          res.status(500).json({ success: false, error: error.message });
-        }
-      },
+    const bookingResult = await bookings.insertOne(bookingData);
+    await cars.updateOne(
+      { _id: new ObjectId(bookingData.carId) },
+      { $inc: { booking_count: 1 } },
     );
 
-    // ==========================================
-    // 7. HEALTH DIAGNOSTIC AND BASELINE
-    // ==========================================
-    app.get("/", (req, res) => {
-      res.send(
-        "⚙️ DriveFleet API Gateway running smoothly with JWKS HTTPOnly Cookie Verification.",
-      );
-    });
-
-    // Start listening only if the database connected successfully
-    if (process.env.NODE_ENV !== "production") {
-      const port = process.env.PORT || 5000;
-      app.listen(port, () => {
-        console.log(`Legacy server listening on port ${port}...`);
-      });
-    }
-  } catch (err) {
-    console.error("====================================================");
-    console.error("❌ CRITICAL DATABASE INITIALIZATION ERROR:");
-    console.error("====================================================");
-    if (
-      err.message.includes("ENOTFOUND") ||
-      err.message.includes("EAI_AGAIN")
-    ) {
-      console.error(
-        "👉 DNS Resolution Failed! Your server cannot reach the internet or the MongoDB host template.",
-      );
-    } else {
-      console.error(`👉 Details: ${err.message}`);
-    }
-    console.error("====================================================");
-    process.exit(1);
+    res.status(201).json({ success: true, data: bookingResult });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
-}
-
-// Fire up pipeline wrappers
-runServer();
-
-app.get("/", (req, res) => {
-  res.send("⚙️ DriveFleet API Gateway is ALIVE on Vercel!");
 });
+
+app.get("/api/my-bookings", verifyJwksCookie, async (req, res) => {
+  try {
+    const bookings = await getCollection("bookings");
+    const result = await bookings.find({ userEmail: req.user.email }).toArray();
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.patch("/api/bookings/:id/cancel", verifyJwksCookie, async (req, res) => {
+  try {
+    const bookings = await getCollection("bookings");
+    const result = await bookings.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: {
+          status: "Cancelled",
+          refundStatus: "Fully Refunded",
+          cancelledAt: new Date().toISOString(),
+        },
+      },
+    );
+    if (result.modifiedCount > 0) {
+      res.json({
+        success: true,
+        message: "Booking cancelled and refund processed.",
+      });
+    } else {
+      res
+        .status(404)
+        .json({
+          success: false,
+          message: "Booking not found or already modified.",
+        });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// 7. HEALTH DIAGNOSTIC AND BASELINE
+// ==========================================
+app.get("/", (req, res) => {
+  res.send("⚙️ DriveFleet API Gateway is ALIVE and SECURE on Vercel!");
+});
+
+// Production environment listener bypass
+if (process.env.NODE_ENV !== "production") {
+  const port = process.env.PORT || 5000;
+  app.listen(port, () =>
+    console.log(`Legacy server listening on port ${port}...`),
+  );
+}
 
 export default app;
