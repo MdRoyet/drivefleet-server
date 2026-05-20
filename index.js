@@ -281,4 +281,8 @@ async function runServer() {
 // Fire up pipeline wrappers
 runServer();
 
+app.get("/", (req, res) => {
+  res.send("⚙️ DriveFleet API Gateway is ALIVE on Vercel!");
+});
+
 export default app;
