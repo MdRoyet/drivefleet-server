@@ -197,6 +197,41 @@ async function runServer() {
       }
     });
 
+    // Secure Cancellation Route (PATCH/PUT update loop)
+    app.patch("/api/bookings/:id/cancel", verifyToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        // Update booking status to Cancelled in the database
+        const result = await bookingsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              status: "Cancelled",
+              refundStatus: "Fully Refunded",
+              cancelledAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        if (result.modifiedCount > 0) {
+          res.json({
+            success: true,
+            message: "Booking cancelled and refund processed.",
+          });
+        } else {
+          res
+            .status(404)
+            .json({
+              success: false,
+              message: "Booking record not found or already modified.",
+            });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // ==========================================
     // 7. HEALTH DIAGNOSTIC AND BASELINE ENTRY
     // ==========================================
