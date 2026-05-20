@@ -181,12 +181,8 @@ async function runServer() {
 
     app.get("/api/my-bookings", verifyToken, async (req, res) => {
       try {
-        const userEmail = req.query.email;
-        if (!userEmail)
-          return res.status(400).json({
-            success: false,
-            message: "Missing email parameter query.",
-          });
+        // 🛡️ SECURE: Forces the database to search ONLY using the cryptographically verified session email
+        const userEmail = req.user.email;
 
         const bookings = await bookingsCollection
           .find({ userEmail: userEmail })
@@ -220,12 +216,10 @@ async function runServer() {
             message: "Booking cancelled and refund processed.",
           });
         } else {
-          res
-            .status(404)
-            .json({
-              success: false,
-              message: "Booking record not found or already modified.",
-            });
+          res.status(404).json({
+            success: false,
+            message: "Booking record not found or already modified.",
+          });
         }
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -233,7 +227,7 @@ async function runServer() {
     });
 
     // ==========================================
-    // 7. HEALTH DIAGNOSTIC AND BASELINE ENTRY
+    // 7. HEALTH DIAGNOSTIC AND BASELINE
     // ==========================================
     app.get("/", (req, res) => {
       res.send("⚙️ DriveFleet API Gateway running smoothly with BetterAuth.");
