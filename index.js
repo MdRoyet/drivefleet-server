@@ -112,6 +112,21 @@ async function runServer() {
       }
     });
 
+    app.get("/api/cars/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await carsCollection.findOne({ _id: new ObjectId(id) });
+        if (!result)
+          return res
+            .status(404)
+            .json({ success: false, message: "Car profile listing not found" });
+
+        res.json({ success: true, data: result });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     app.put("/api/cars/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
@@ -126,20 +141,6 @@ async function runServer() {
           { $set: updatedFields },
         );
 
-        res.json({ success: true, data: result });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
-
-    app.put("/api/cars/:id", verifyToken, async (req, res) => {
-      try {
-        const id = req.params.id;
-        const updatedFields = req.body;
-        const result = await carsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updatedFields },
-        );
         res.json({ success: true, data: result });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
